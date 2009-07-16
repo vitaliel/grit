@@ -78,7 +78,7 @@ module Grit
       Open3.popen3(command) do |_, stdout, stderr|
         Timeout.timeout(self.class.git_timeout) do
           while tmp = stdout.read(1024)
-            ret += tmp
+            ret << tmp
             if (@bytes_read += tmp.size) > self.class.git_max_size
               bytes = @bytes_read
               @bytes_read = 0
@@ -88,7 +88,7 @@ module Grit
         end
 
         while tmp = stderr.read(1024)
-          err += tmp
+          err << tmp
         end
       end
       [ret, err]
@@ -102,11 +102,11 @@ module Grit
       ret, err = '', ''
       Open3.popen3(command) do |_, stdout, stderr|
         while tmp = stdout.read(1024)
-          ret += tmp
+          ret << tmp
         end
 
         while tmp = stderr.read(1024)
-          err += tmp
+          err << tmp
         end
       end
       [ret, err]
