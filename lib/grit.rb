@@ -52,12 +52,13 @@ module Grit
     attr_accessor :use_git_ruby
     # The standard +logger+ for debugging git calls - this defaults to a plain STDOUT logger
     attr_accessor :logger
+
     def log(str)
-      logger.debug { str }
+      logger.debug { str } if debug
     end
 
     def logx(&block)
-      logger.debug &block
+      logger.debug(&block) if debug
     end
   end
 
