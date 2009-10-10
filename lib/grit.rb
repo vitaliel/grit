@@ -55,7 +55,12 @@ module Grit
     def log(str)
       logger.debug { str }
     end
+
+    def logx(&block)
+      logger.debug &block
+    end
   end
+
   self.debug = false
   self.use_git_ruby = true
 
