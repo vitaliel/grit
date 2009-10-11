@@ -26,7 +26,7 @@ module Grit
         def initialize(type, content)
           @type = type
           @content = content
-          Grit.logx {"Creating raw obj:#{type} size:#{@content.length}"}
+          Grit.logx {"Creating raw obj:#{type} size:#{@content.length} #{content[0..50].inspect}"}
         end
 
         def sha1

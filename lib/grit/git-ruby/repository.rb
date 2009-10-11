@@ -105,7 +105,9 @@ module Grit
       def get_object_by_sha1(sha1)
         r = get_raw_object_by_sha1(sha1)
         return nil if !r
-        GitObject.from_raw(r)
+        o = GitObject.from_raw(r)
+        o.orig_sha1 = sha1
+        o
       end
 
       # writes a raw object into the git repo
@@ -520,7 +522,34 @@ module Grit
         true
       end
 
+      def diff_tree_by_sha(tree_a_sha, tree_b_sha)
+
+      end
+
+      # Returns array with entries from tree_a
+      # tree_a.entry - tree_b.entry
+      def diff_tree(tree_a, tree_b)
+        Grit.logx { "repo: diff_tree commit:#{tree_a}, path:#{tree_b}"}
+        src = {}
+
+        tree_b.entry.each do |e|
+          src[e.sha1] = e
+        end
+
+        diffs = []
+
+        tree_a.entry.each do |e|
+          unless src.has_key?(e.sha1)
+            diffs << e
+          end
+        end
+
+        diffs
+      end
+
       def get_subtree(commit_sha, path)
+        Grit.logx { "repo: get_subtree commit:#{commit_sha}, path:#{path}"}
+        #pp get_object_by_sha1(commit_sha)
         tree_sha = get_object_by_sha1(commit_sha).tree
 
         if path && !(path == '' || path == '.' || path == './')
@@ -538,7 +567,129 @@ module Grit
         tree_sha
       end
 
+      def blame_tree2(commit_sha, path)
+        Grit.logx { "Blame tree: commit:#{commit_sha}, path:#{path}"}
+        commit = get_object_by_sha1(commit_sha)
+        tree_sha = commit.tree
+        return {} if !tree_sha
+
+        looking_for = {}
+        base_tree = get_object_by_sha1(tree_sha)
+
+        base_tree.entry.each do |e|
+          looking_for[e.sha1] = e
+        end
+
+        #pp looking_for
+        result = {}
+
+        if commit.first?
+          Grit.logx { "Blame tree: commit has no parent:#{commit}"}
+          result = {}
+          looking_for.values.each {|x| result[x] = commit}
+          return result
+        end
+
+        tree_a = base_tree
+        i = 0
+
+        w_idx = 0
+        # next commits to check
+        next_c = commit.parent.map {|sha1| get_object_by_sha1(sha1)}
+        checked = {}
+
+        loop do
+          #puts('*' * 80)
+
+          p = nil
+
+          # Get one parent that is not a merge commit
+          loop do
+            #puts "-Find next commit"
+            #pp next_c
+
+            # Pick one with higher date
+            max_date = next_c[0].committer.date
+            p = next_c.first
+            n_idx = 0
+
+            next_c.each_with_index do |c, idx|
+              if c.committer.date > max_date
+                p = c
+                n_idx = idx
+                break
+              end
+            end
+
+            if p.merge?
+              # TODO check merge commit if it modified files i.e.: with conflicts
+              # New tree entries that do not belong to children
+              # diffs = m-commit.tree.entries - c1.tree.entries - c2.tree.entries
+
+              children = p.parent.map {|sha1| get_object_by_sha1(sha1)}
+              next_c[n_idx] = children.first
+              next_c += children[1..-1]
+            else
+              if p.first?
+                next_c.delete(p)
+              else
+                next_parent = get_object_by_sha1(p.parent.first)
+
+                # if it does not exists
+                if next_c.include?(next_parent)
+                  next_c.delete(p)
+                else
+                  next_c[n_idx] = next_parent
+                end
+              end
+
+              break
+            end
+          end
+
+          if checked[p.orig_sha1]
+            #puts "Already checked:#{p.orig_sha1}"
+            next
+          end
+
+          i += 1
+
+          #puts "- Compare\n\t#{commit.inspect}\n\t#{p.inspect}"
+
+          checked[p.orig_sha1] = 1
+
+          tree_b = get_object_by_sha1(p.tree)
+          diffs = diff_tree(tree_a, tree_b)
+          #raise "Something wrong with #{tree_a} #{tree_b}" if diffs.size == 0
+          #break if diffs.size == 0
+          #puts "looking_for size #{looking_for.size}"
+
+          for e in diffs
+            # has entry changed?
+            if looking_for[e.sha1]
+              result[e] = commit
+              looking_for.delete e.sha1
+            end
+          end
+
+          #pp result
+          break if looking_for.size == 0 || next_c.size == 0
+          # check 100 commits
+          #break if i > 100
+          tree_a = tree_b
+          commit = p
+        end
+
+        # set remaining items to last commit
+        looking_for.values.each {|x| result[x] = commit}
+
+        #puts "Checked #{i} commits"
+
+        result
+      end
+
       def blame_tree(commit_sha, path)
+        Grit.logx { "Blame tree: commit:#{commit_sha}, path:#{path}"}
         # find subtree
         tree_sha = get_subtree(commit_sha, path)
         return {} if !tree_sha
@@ -561,8 +712,9 @@ module Grit
       end
 
       def look_for_commits(commit_sha, path, looking_for, options = {})
-        return [] if @already_searched[commit_sha] # to prevent rechecking branches
+        Grit.logx { "look_for_commits: commit:#{commit_sha}, path:#{path}, #{looking_for.inspect}"}
 
+        return [] if @already_searched[commit_sha] # to prevent rechecking branches
         @already_searched[commit_sha] = true
 
         commit = get_object_by_sha1(commit_sha)
