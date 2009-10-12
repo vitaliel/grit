@@ -48,15 +48,11 @@ module Grit
         end
 
         def with_idx
-          open_idx
-          idx = FileWindow.new(@index_file, @version)
-          yield idx
-          idx.unmap
+          @fwin_idx ||= open_idx
         end
 
         def with_packfile
-          open_pack
-          yield @pack_file
+          @pack_file ||= open_pack
         end
 
         def open_pack
@@ -85,16 +81,18 @@ module Grit
           else
             @version = 1
           end
+
+          @fwin_idx = FileWindow.new(@index_file, @version)
         end
 
         def cache_objects
           @cache = {}
-          with_packfile do |packfile|
-            each_entry do |sha, offset|
-              data, type = unpack_object(packfile, offset, {:caching => true})
-              if data
-                @cache[sha] = RawObject.new(OBJ_TYPES[type], data)
-              end
+          packfile = with_packfile
+
+          each_entry do |sha, offset|
+            data, type = unpack_object(packfile, offset, {:caching => true})
+            if data
+              @cache[sha] = RawObject.new(OBJ_TYPES[type], data)
             end
           end
         end
@@ -127,34 +125,34 @@ module Grit
         end
 
         def init_pack
-          with_idx do |idx|
-            @offsets = [0]
-            FanOutCount.times do |i|
-              pos = idx[i * IdxOffsetSize,IdxOffsetSize].unpack('N')[0]
-              if pos < @offsets[i]
-                raise PackFormatError, "pack #@name has discontinuous index #{i}"
-              end
-              @offsets << pos
+          idx = with_idx
+          @offsets = [0]
+
+          FanOutCount.times do |i|
+            pos = idx[i * IdxOffsetSize,IdxOffsetSize].unpack('N')[0]
+            if pos < @offsets[i]
+              raise PackFormatError, "pack #@name has discontinuous index #{i}"
             end
-            @size = @offsets[-1]
+            @offsets << pos
           end
+
+          @size = @offsets[-1]
         end
 
         def each_entry
-          with_idx do |idx|
-            if @version == 2
-              data = read_data_v2(idx)
-              data.each do |sha1, crc, offset|
-                yield sha1, offset
-              end
-            else
-              pos = OffsetStart
-              @size.times do
-                offset = idx[pos,OffsetSize].unpack('N')[0]
-                sha1 = idx[pos+OffsetSize,SHA1Size]
-                pos += EntrySize
-                yield sha1, offset
-              end
+          idx = with_idx
+          if @version == 2
+            data = read_data_v2(idx)
+            data.each do |sha1, crc, offset|
+              yield sha1, offset
+            end
+          else
+            pos = OffsetStart
+            @size.times do
+              offset = idx[pos,OffsetSize].unpack('N')[0]
+              sha1 = idx[pos+OffsetSize,SHA1Size]
+              pos += EntrySize
+              yield sha1, offset
             end
           end
         end
@@ -181,19 +179,19 @@ module Grit
         private :read_data_v2
 
         def each_sha1
-          with_idx do |idx|
-            if @version == 2
-              data = read_data_v2(idx)
-              data.each do |sha1, crc, offset|
-                yield sha1
-              end
-            else
-              pos = SHA1Start
-              @size.times do
-                sha1 = idx[pos,SHA1Size]
-                pos += EntrySize
-                yield sha1
-              end
+          idx = with_idx
+
+          if @version == 2
+            data = read_data_v2(idx)
+            data.each do |sha1, crc, offset|
+              yield sha1
+            end
+          else
+            pos = SHA1Start
+            @size.times do
+              sha1 = idx[pos,SHA1Size]
+              pos += EntrySize
+              yield sha1
             end
           end
         end
@@ -236,22 +234,16 @@ module Grit
         end
 
         def find_object(sha1)
-          obj = nil
-          with_idx do |idx|
-            obj = find_object_in_index(idx, sha1)
-          end
-          obj
+          find_object_in_index(with_idx, sha1)
         end
+
         private :find_object
 
         def parse_object(offset)
-          obj = nil
-          with_packfile do |packfile|
-            data, type = unpack_object(packfile, offset)
-            obj = RawObject.new(OBJ_TYPES[type], data)
-          end
-          obj
+          data, type = unpack_object(with_packfile, offset)
+          RawObject.new(OBJ_TYPES[type], data)
         end
+
         protected :parse_object
 
         def unpack_object(packfile, offset, options = {})
@@ -317,23 +309,27 @@ module Grit
 
         def unpack_compressed(offset, destsize)
           outdata = ""
-          with_packfile do |packfile|
-            packfile.seek(offset)
-            zstr = Zlib::Inflate.new
-            while outdata.size < destsize
-              indata = packfile.read(4096)
-              if indata.size == 0
-                raise PackFormatError, 'error reading pack data'
-              end
-              outdata += zstr.inflate(indata)
-            end
-            if outdata.size > destsize
+          packfile = with_packfile
+          packfile.seek(offset)
+          zstr = Zlib::Inflate.new
+
+          while outdata.size < destsize
+            indata = packfile.read(4096)
+            if indata.size == 0
               raise PackFormatError, 'error reading pack data'
             end
-            zstr.close
+            outdata << zstr.inflate(indata)
           end
+
+          zstr.close
+
+          if outdata.size > destsize
+            raise PackFormatError, 'error reading pack data'
+          end
+
           outdata
         end
+
         private :unpack_compressed
 
         def patch_delta(base, delta)
@@ -344,6 +340,7 @@ module Grit
 
           dest_size, pos = patch_delta_header_size(delta, pos)
           dest = ""
+
           while pos < delta.size
             c = delta.getord(pos)
             pos += 1
@@ -359,9 +356,9 @@ module Grit
               cp_size |= delta.getord(pos += 1) << 16 if c & 0x40 != 0
               cp_size = 0x10000 if cp_size == 0
               pos += 1
-              dest += base[cp_off,cp_size]
+              dest << base[cp_off,cp_size]
             elsif c != 0
-              dest += delta[pos,c]
+              dest << delta[pos,c]
               pos += c
             else
               raise PackFormatError, 'invalid delta data'

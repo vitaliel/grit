@@ -21,8 +21,6 @@ module Grit
     attr_accessor :name, :email, :date, :offset
 
     def initialize(str)
-      @email = ''
-      @date = Time.now
       @offset = 0
 
       m = /^(.*?) <(.*)> (\d+) ([+-])0*(\d+?)$/.match(str)
@@ -39,6 +37,9 @@ module Grit
         @date = Time.at(Integer(m[3]))
         @offset = (m[4] == "-" ? -1 : 1)*Integer(m[5])
       end
+
+      @email ||= ''
+      @date ||= Time.now
     end
 
     def to_s
@@ -113,16 +114,21 @@ module Grit
     S_IFDIR =  0040000
     S_IFGITLINK = 0160000
     attr_accessor :mode, :name, :sha1
+    Z = '0'.getord(0)
+
     def initialize(mode, filename, sha1o)
       @mode = 0
+
       mode.each_byte do |i|
-        @mode = (@mode << 3) | (i-'0'.getord(0))
+        @mode = (@mode << 3) | (i - Z)
       end
+
       @name = filename
       @sha1 = sha1o
-      if ![S_IFLNK, S_IFDIR, S_IFREG, S_IFGITLINK].include?(@mode & S_IFMT)
-        raise RuntimeError, "unknown type for directory entry"
-      end
+
+      #if ![S_IFLNK, S_IFDIR, S_IFREG, S_IFGITLINK].include?(@mode & S_IFMT)
+      #  raise RuntimeError, "unknown type for directory entry"
+      #end
     end
 
     def type
@@ -168,6 +174,18 @@ module Grit
       end
     end
 
+    def ==(other)
+      @sha1 == other.sha1
+    end
+
+    def <=>(other)
+      @sha1 <=> other.sha1
+    end
+
+    def eql?(other)
+      self == other
+    end
+
     def dir?
       type == :directory
     end
@@ -181,29 +199,36 @@ module Grit
     end
   end
 
+  if RUBY_VERSION > '1.9'
+    def self.read_bytes_until(io, char)
+      string = ''
 
-  def self.read_bytes_until(io, char)
-    string = ''
-    if RUBY_VERSION > '1.9'
       while ((next_char = io.getc) != char) && !io.eof
-        string += next_char
+        string << next_char
       end
-    else
-      while ((next_char = io.getc.chr) != char) && !io.eof
-        string += next_char
-      end
-    end
-    string
-  end
 
+      string
+    end
+  else
+    def self.read_bytes_until(io, char)
+      string = ''
+
+      while ((next_char = io.getc.chr) != char) && !io.eof
+        string << next_char
+      end
+
+      string
+    end
+  end
 
   class Tree < GitObject
     attr_accessor :entry
 
-    def self.from_raw(rawobject, repository=nil)
+    def self.from_raw_old(rawobject, repository=nil)
       raw = StringIO.new(rawobject.content)
-
+      #debugger
       entries = []
+
       while !raw.eof?
         mode      = Grit::GitRuby.read_bytes_until(raw, ' ')
         file_name = Grit::GitRuby.read_bytes_until(raw, "\0")
@@ -212,6 +237,29 @@ module Grit
 
         entries << DirectoryEntry.new(mode, file_name, sha)
       end
+      new(entries, repository)
+    end
+
+    def self.from_raw(raw_object, repository=nil)
+      content = raw_object.content
+      j = 0
+      entries = []
+
+      while j < content.length
+        k = content.index(' ', j)
+        mode      = content[j..k - 1]
+        j = k + 1
+
+        k = content.index("\0", j)
+        file_name = content[j..k - 1]
+        j = k + 1
+
+        raw_sha   = content[j..j + 19]
+        sha = raw_sha.unpack("H*").first
+        j += 20
+        entries << DirectoryEntry.new(mode, file_name, sha)
+      end
+
       new(entries, repository)
     end
 
